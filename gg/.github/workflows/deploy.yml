@@ -1,0 +1,65 @@
+# Builds songs.csv on GitHub's servers (lyrics from LRCLIB, optional official videos),
+# then publishes the game to GitHub Pages. Full lyrics stay in the Actions cache, never in the site.
+name: Build songs and deploy
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  pages: write
+  id-token: write
+
+concurrency:
+  group: pages
+  cancel-in-progress: false
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      # Lyrics and search results from earlier runs: only new songs are fetched again.
+      - uses: actions/cache@v4
+        with:
+          path: |
+            lyrics_cache.json
+            youtube_cache.json
+          key: song-caches-${{ github.run_id }}
+          restore-keys: song-caches-
+
+      - name: Build songs.csv
+        shell: bash
+        env:
+          YT_API_KEY: ${{ secrets.YT_API_KEY }}
+        run: |
+          python3 build_lyrics.py songs_input.csv songs.csv | tee build_report.txt
+          {
+            echo "## Song build report"
+            echo '```'
+            sed -n '/^Lyrics match:/,$p' build_report.txt
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Assemble site
+        run: |
+          mkdir _site
+          cp index.html app.js style.css songs.csv _site/
+
+      - uses: actions/configure-pages@v5
+      - uses: actions/upload-pages-artifact@v3
+        with:
+          path: _site
+
+  deploy:
+    needs: build
+    runs-on: ubuntu-latest
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    steps:
+      - id: deployment
+        uses: actions/deploy-pages@v4

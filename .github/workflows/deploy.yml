@@ -1,4 +1,5 @@
-# Builds the Gaana Guess song list from gg/ on GitHub's servers, then publishes ONLY the game files.
+# Repo-root workflow for kaam-dhanda: builds the Gaana Guess song list from gg/ on GitHub's servers,
+# plus the separate demo-round songs, then publishes ONLY the game files to GitHub Pages.
 name: Build songs and deploy
 
 on:
@@ -27,32 +28,36 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      # Lyrics from earlier runs: only new songs are fetched again.
+      # Lyrics and film facts from earlier runs: only new songs are fetched again.
       - uses: actions/cache@v4
         with:
           path: |
             gg/lyrics_cache.json
-            gg/youtube_cache.json
+            gg/wiki_cache.json
           key: song-caches-${{ github.run_id }}
           restore-keys: song-caches-
 
       - name: Build songs.csv
         shell: bash
-        env:
-          YT_API_KEY: ${{ secrets.YT_API_KEY }}
         run: |
           python3 build_lyrics.py songs_input.csv songs.csv | tee build_report.txt
+          python3 build_lyrics.py demo_input.csv demo.csv | tee demo_report.txt
           {
             echo "## Song build report"
             echo '```'
-            sed -n '/^Lyrics match:/,$p' build_report.txt
+            sed -n '/^Lyrics match:/,/^Hints:/p' build_report.txt
+            sed -n '/^Playable songs per bucket/,$p' build_report.txt
+            echo '```'
+            echo "## Demo round build"
+            echo '```'
+            sed -n '/^Lyrics match:/p' demo_report.txt
             echo '```'
           } >> "$GITHUB_STEP_SUMMARY"
 
       - name: Assemble site
         run: |
           mkdir _site
-          cp index.html app.js style.css songs.csv _site/
+          cp index.html app.js style.css songs.csv demo.csv _site/
 
       - uses: actions/configure-pages@v5
       - uses: actions/upload-pages-artifact@v3

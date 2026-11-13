@@ -1,0 +1,70 @@
+# Builds the Gaana Guess song list from gg/ on GitHub's servers, then publishes ONLY the game files.
+name: Build songs and deploy
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - "gg/**"
+      - ".github/workflows/deploy.yml"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  pages: write
+  id-token: write
+
+concurrency:
+  group: pages
+  cancel-in-progress: false
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: gg
+    steps:
+      - uses: actions/checkout@v4
+
+      # Lyrics from earlier runs: only new songs are fetched again.
+      - uses: actions/cache@v4
+        with:
+          path: |
+            gg/lyrics_cache.json
+            gg/youtube_cache.json
+          key: song-caches-${{ github.run_id }}
+          restore-keys: song-caches-
+
+      - name: Build songs.csv
+        shell: bash
+        env:
+          YT_API_KEY: ${{ secrets.YT_API_KEY }}
+        run: |
+          python3 build_lyrics.py songs_input.csv songs.csv | tee build_report.txt
+          {
+            echo "## Song build report"
+            echo '```'
+            sed -n '/^Lyrics match:/,$p' build_report.txt
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Assemble site
+        run: |
+          mkdir _site
+          cp index.html app.js style.css songs.csv _site/
+
+      - uses: actions/configure-pages@v5
+      - uses: actions/upload-pages-artifact@v3
+        with:
+          path: gg/_site
+
+  deploy:
+    needs: build
+    runs-on: ubuntu-latest
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    steps:
+      - id: deployment
+        uses: actions/deploy-pages@v4

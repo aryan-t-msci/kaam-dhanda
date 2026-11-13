@@ -338,7 +338,7 @@ function viewPick() {
 
 function viewPlay() {
   const t = S.turn, p = S.players[t.pi], song = BY_ID[t.songId], h = CONFIG.help[t.level];
-  const lines = snip => snip.text.split(' / ').map(esc).join('<br>');
+  const lines = snip => snip.text.split(' / ').map(l => `<span class="ln">${esc(l)}</span>`).join('');
   return `
   <section class="panel play">
     <div class="playhead">
@@ -368,14 +368,14 @@ function viewReveal() {
     <h2 class="title">${esc(song.title)}</h2>
     <p class="sub">${esc(song.album)}${song.year ? `, ${song.year}` : ''}</p>
 
-    <div class="judge">
+    ${t.answer ? `<div class="judge">
       <h3>${esc(p.name)} answered</h3>
-      ${t.answer ? `<div class="judgerow"><span class="said">“${esc(t.answer)}”</span>
+      <div class="judgerow"><span class="said">“${esc(t.answer)}”</span>
         <span class="seg" role="group" aria-label="Verdict">
           <button data-act="judge" data-v="1" aria-pressed="${t.ok}">Correct</button>
           <button data-act="judge" data-v="0" aria-pressed="${!t.ok}">Wrong</button>
-        </span></div>` : '<p class="none">No answer was entered.</p>'}
-    </div>
+        </span></div>
+    </div>` : ''}
     <p id="verdict" class="verdict ${t.points ? 'good' : 'miss'}">${verdictText(t)}</p>
     <p id="pts" class="pts">+${t.points}</p>
 

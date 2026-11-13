@@ -149,9 +149,12 @@ input:focus { outline: none; border-color: var(--rani); }
   margin: 0 0 1.5rem; padding: clamp(1.5rem, 6vw, 2.75rem) clamp(1.25rem, 5vw, 2.5rem);
   background: var(--marigold); color: var(--marigold-ink);
   border-radius: 4px 28px 4px 28px;
-  font: 400 clamp(1.6rem, 6vw, 2.5rem)/1.3 var(--display);
-  text-wrap: balance;
+  font: 400 clamp(1.45rem, 5vw, 2.1rem)/1.25 var(--display);
 }
+/* One lyric line per block. Hanging indent: a wrapped continuation is indented,
+   so a new line always starts flush left and the two can't be confused. */
+.lyric .ln { display: block; padding-left: 1.1em; text-indent: -1.1em; text-wrap: pretty; }
+.lyric .ln + .ln { margin-top: .45em; }
 .hint {
   border-left: 4px solid var(--peacock); padding: .4rem 0 .4rem .9rem;
   color: var(--peacock); font-weight: 600;
@@ -192,6 +195,7 @@ dd { margin: 0; }
 /* reveal: answer, judging, video */
 h3 { font: 600 1rem/1.3 var(--body); color: var(--muted); margin: 0 0 .5rem; }
 .reveal .title { margin-bottom: .1rem; }
+.reveal .verdict { margin-top: 1rem; }
 .sub { color: var(--muted); margin-bottom: 1.25rem; }
 .judge { border-top: 1px solid var(--line); padding-top: 1rem; margin-bottom: .75rem; }
 .judge ol { list-style: none; padding: 0; margin: 0; display: grid; gap: .5rem; }
@@ -215,7 +219,7 @@ h3 { font: 600 1rem/1.3 var(--body); color: var(--muted); margin: 0 0 .5rem; }
 .stepper { display: inline-flex; align-items: center; gap: .75rem; }
 .stepper .btn { width: 2.75rem; height: 2.75rem; padding: 0; font-size: 1.3rem; }
 .stepper output { min-width: 2ch; text-align: center; font: 400 1.6rem/1 var(--display); font-variant-numeric: tabular-nums; }
-.lyric.extra { background: color-mix(in srgb, var(--marigold) 45%, var(--surface)); font-size: clamp(1.25rem, 4.5vw, 1.8rem); }
+.lyric.extra { background: color-mix(in srgb, var(--marigold) 45%, var(--surface)); font-size: clamp(1.2rem, 4vw, 1.7rem); }
 .allows { display: block; font-weight: 400; font-size: .85rem; color: var(--muted); margin-top: .15rem; }
 .answer-field { display: block; }
 .answer-field > span { display: block; font-weight: 600; margin-bottom: .3rem; }

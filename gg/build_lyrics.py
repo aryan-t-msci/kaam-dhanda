@@ -241,7 +241,11 @@ def lookup(row):
 def lyrics_stage(rows, cache):
     todo = [r for r in rows if r.get("id") and r["id"] not in cache]
     for i, row in enumerate(todo, 1):
-        best, s = lookup(row)
+        try:
+            best, s = lookup(row)
+        except Exception as e:                           # one bad response must not stop an unattended build
+            print(f"  lyrics [{i}/{len(todo)}] error      {row.get('title')}: {e}")
+            continue
         if best and s >= CHECK:
             cache[row["id"]] = {"status": "ok" if s >= OK else "check", "score": round(s, 2),
                                 "id": best.get("id"), "track": best.get("trackName", ""),

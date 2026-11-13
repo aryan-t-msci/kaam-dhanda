@@ -11,13 +11,24 @@ python -m http.server
 Open http://localhost:8000. (Opening `index.html` directly won't work: browsers block
 loading `songs.csv` from `file://`.)
 
-## Put it on GitHub Pages
-1. Push this folder to a GitHub repo (files at the repo root).
-2. Repo **Settings → Pages → Build and deployment**: Source = *Deploy from a branch*,
-   Branch = `main`, folder = `/ (root)`. Save.
-3. After a minute it's live at `https://<username>.github.io/<repo>/`.
+## Put it on GitHub Pages (builds the real song list for you)
+1. Push this folder to a GitHub repo (files at the repo root, branch `main`).
+2. Repo **Settings → Pages → Build and deployment → Source: GitHub Actions**.
+   (If it was set to "Deploy from a branch", switch it. The workflow does the deploying.)
+3. Open the **Actions** tab. "Build songs and deploy" runs on every push: it fetches lyrics from
+   LRCLIB on GitHub's servers, builds `songs.csv`, and publishes the site. The first run takes
+   about 5–10 minutes; later runs reuse cached lyrics and take about a minute.
+4. The run's summary page shows the build report: lyric matches and songs per bucket.
+5. The game is live at `https://<username>.github.io/<repo>/`.
 
-## Build the real song list
+Full lyrics live only in the workflow cache, never in the repo or on the site; the site gets
+2–3 line snippets. The `songs.csv` in the repo is demo data for local play; the workflow replaces it.
+
+To add or fix songs, edit `songs_input.csv` and push. Re-run any time from Actions → Run workflow.
+Official video embeds are optional: add a repository secret named `YT_API_KEY`
+(Settings → Secrets and variables → Actions) and the next run finds them.
+
+## Build the song list locally (optional)
 The bundled `songs.csv` is demo data (invented titles and lines) so the game works out of the box.
 
 1. Fill `songs_input.csv` (columns explained at the top of `build_lyrics.py`).

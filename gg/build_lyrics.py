@@ -15,11 +15,14 @@ Every network stage caches raw results; every decision is re-made from the cache
 run, so editing input rows or the channel allowlist never costs another API call.
   1. LYRICS   LRCLIB -> lyrics_cache.json        (full lyrics: local only, git-ignored)
   2. YOUTUBE  YouTube Data API search -> youtube_cache.json (top 10 results per song)
-  3. BUILD    caches -> songs.csv: Hinglish snippets (2-3 lines, timestamped) per level,
-              official video chosen from allowlisted channels. Full lyrics never reach songs.csv.
+  3. FILMS    Wikipedia article summary per film/album -> wiki_cache.json, for an automatic hint
+  4. BUILD    caches -> songs.csv: Hinglish snippets (2-3 lines, timestamped) per level,
+              official video chosen from allowlisted channels, film-fact hint with titles removed.
+              Full lyrics never reach songs.csv.
 
 Input columns: id, title, album, year, singers (;), lead_gender (male|female|duet), composer,
-  film_leads (;), levels (; of easy|medium|hard), youtube_id, yt_verified (y|n), yt_offset, duration_s
+  film_leads (;), levels (; of easy|medium|hard), youtube_id, yt_verified (y|n), yt_offset, duration_s,
+  hint_song (optional hand-written hint; must not contain words of the song's title)
   A row with youtube_id filled and yt_verified=y is trusted as-is and never searched.
 """
 import csv, html, json, os, re, sys, time, unicodedata
@@ -31,8 +34,11 @@ LRCLIB = "https://lrclib.net/api"
 YT_SEARCH = "https://www.googleapis.com/youtube/v3/search"
 UA = "gaana-guess/1.0 (personal, non-commercial)"      # LRCLIB asks clients to identify themselves
 LYRICS_CACHE, YT_CACHE, SELECTIONS = "lyrics_cache.json", "youtube_cache.json", "selections.json"
+WIKI_CACHE = "wiki_cache.json"
+WIKI_API = "https://en.wikipedia.org/w/api.php"
+WIKI_SUMMARY = "https://en.wikipedia.org/api/rest_v1/page/summary/"
 SNIP_KEYS = ("easy", "easy_extra", "medium", "hard")
-OUT_COLS = ["snippet_easy", "snippet_easy_extra", "snippet_medium", "snippet_hard", "yt_channel", "yt_title",
+OUT_COLS = ["snippet_easy", "snippet_easy_extra", "snippet_medium", "snippet_hard", "hint_film", "yt_channel", "yt_title",
             "lrclib_id", "lrclib_track", "lrclib_artist", "match_score", "match_status"]
 OK, CHECK = 0.80, 0.60                                  # lyric match thresholds
 LEVELS = ("easy", "medium", "hard")
@@ -40,7 +46,8 @@ MIN_PER_BUCKET = 30
 ERAS = {"90s": (1990, 1999), "00s": (2000, 2009), "10s": (2010, 2019), "20s": (2020, 2099)}
 SINGERS = {"Arijit Singh": ["arijit singh"], "Shreya Ghoshal": ["shreya ghoshal"],
            "Sunidhi Chauhan": ["sunidhi chauhan"], "KK": ["kk", "krishnakumar kunnath"],
-           "Shaan": ["shaan"], "Sonu Nigam": ["sonu nigam"], "Udit Narayan": ["udit narayan"]}
+           "Shaan": ["shaan"], "Sonu Nigam": ["sonu nigam"], "Udit Narayan": ["udit narayan"],
+           "Alka Yagnik": ["alka yagnik"], "Kumar Sanu": ["kumar sanu"]}
 
 # Official label channels. A video counts as verified only if its channel title is here.
 # The build prints unlisted channels it saw; check one on YouTube before adding it.
@@ -295,7 +302,105 @@ def pick_video(row, items):
             best, best_s = it, s
     return best if best_s >= 0.6 else None
 
-# ---------------------------------------------------------------- stage 3: build
+# ---------------------------------------------------------------- stage 3: film facts (Wikipedia)
+def film_key(row):
+    return f"{row.get('album', '')}|{row.get('year', '')}"
+
+
+def wiki_stage(rows, cache):
+    """One Wikipedia lookup per film/album: search, then take the article summary if it is about
+    a film or album from that year. Misses are cached too (delete the key to retry)."""
+    films = sorted({film_key(r) for r in rows if r.get("album")} - set(cache))
+    print(f"\nFilm facts: {len(films)} films/albums to look up on Wikipedia")
+    for i, key in enumerate(films, 1):
+        album, year = key.rsplit("|", 1)
+        found = {}
+        try:
+            res = get_json(WIKI_API + "?" + urllib.parse.urlencode(
+                {"action": "query", "list": "search", "srsearch": f"{album} {year} film", "srlimit": 3,
+                 "format": "json"})) or {}
+            for hit in res.get("query", {}).get("search", []):
+                summ = get_json(WIKI_SUMMARY + urllib.parse.quote(hit["title"].replace(" ", "_"))) or {}
+                text = summ.get("extract", "")
+                if year in text and re.search(r"\b(film|soundtrack|album)\b", text) and \
+                        SequenceMatcher(None, fold(album), fold(hit["title"])).ratio() >= 0.5:
+                    found = {"page": hit["title"], "extract": text}
+                    break
+        except Exception as e:
+            print(f"  film [{i}/{len(films)}] error {album}: {e}")
+            continue
+        cache[key] = found
+        if i % 20 == 0:
+            save_json(WIKI_CACHE, cache)
+        time.sleep(0.1)
+    save_json(WIKI_CACHE, cache)
+
+
+def title_words(title):
+    return {w for w in fold(title).split() if len(w) >= 4}
+
+
+def leaks(hint, title):
+    return bool(title_words(title) & set(fold(hint).split()))
+
+
+STORY = re.compile(r"\b(follows|story|revolves|centres|centers|about|based on|remake|adaptation|set in|set against|tells|depicts|chronicles|narrates|plot|journey|falls? in love|struggles?)\b", re.I)
+STATS = re.compile(r"\b(box office|grossed|grossing|crore|budget|award|Filmfare|National Film|nominat|released (on|in|theatrically)|premiered|commercial|critical|critics|soundtrack|cinematography|edited by|principal photography)\b", re.I)
+
+
+def strip_names(text, row, wiki):
+    """Remove every name of the film from a sentence so the hint never gives the title away."""
+    text = re.sub(r",?\s*(also|better|simply|popularly) known (as|by)[^,]*,", ",", text)
+    page = wiki.get("page", "")
+    for name in sorted({row.get("album", ""), page, re.sub(r"\s*\(.*\)$", "", page)}, key=len, reverse=True):
+        if name:
+            text = re.sub(re.escape(name), "the film", text, flags=re.I)
+    text = re.sub(r"\bthe film,?\s+the film\b", "the film", text, flags=re.I)
+    return re.sub(r"\s{2,}", " ", text).replace(" ,", ",").strip(" ,")
+
+
+def film_hint(wiki, row):
+    """
+    The most story-specific sentence of the film's Wikipedia intro: who it follows, where it is set,
+    what it is based on. Box-office, award and release sentences score down. Falls back to the
+    first sentence (genre, year, director) only when no sentence tells the story.
+    """
+    text = (wiki or {}).get("extract", "")
+    if not text:
+        return ""
+    text = re.sub(r"\s*\([^)]*\)", "", text)                          # (transl. ...) first, so 'transl.' can't split
+    sentences = [x.strip().rstrip(".") for x in re.split(r"(?<=[a-z0-9])\.\s+(?=[A-Z])", text) if x.strip()]
+    title = row.get("title", "")
+
+    def score(i, x):
+        sc = 3 * len(STORY.findall(x)) - 4 * len(STATS.findall(x))
+        sc += 1 if 50 <= len(x) <= 230 else -1
+        return sc - (2 if i == 0 else 0)                              # the first sentence is the generic one
+
+    ranked = sorted(enumerate(sentences), key=lambda ix: score(*ix), reverse=True)
+    for i, x in ranked:
+        if score(i, x) < 1 and i != 0:
+            continue
+        h = strip_names(x, row, wiki)
+        if i == 0:                                                    # generic fallback: "From a 1995 ... film by ..."
+            h = re.sub(r"^\W*(the film\s+)?(is|was)\s+(an?|the)\s+", lambda m: f"From {m.group(3)} ", h, flags=re.I)
+            h = re.sub(r",?\s*(and\s+)?(co-)?produced by\b.*$", "", h)
+            if not h.lower().startswith("from "):
+                continue
+        h = re.sub(r"\bIndian Hindi[- ]language\b", "Hindi", h)
+        if len(h) > 240:                                              # long: drop a leading "Set in ..., during ...," clause
+            m = re.match(r"^[^,]{0,140}(,[^,]{0,140})?,\s+(the film|it)\s", h, flags=re.I)
+            if m:
+                h = h[m.start(2):]
+        h = h[0].upper() + h[1:] if h else h
+        if len(h) > 260:                                              # still long: cut at a clause boundary
+            cut = max(h.rfind(", ", 0, 260), h.rfind(" and ", 0, 260))
+            h = h[:cut] if cut > 90 else h[:260].rsplit(" ", 1)[0]
+        if h and not leaks(h, title):
+            return h + "."
+    return ""
+
+# ---------------------------------------------------------------- stage 4: build
 LRC_LINE = re.compile(r"\[(\d+):(\d+(?:\.\d+)?)\](.*)")
 
 
@@ -410,9 +515,13 @@ def export_review(rows, lyr, size=25):
         print("wrote", path)
 
 
-def build_stage(rows, lyr, yt, sel):
+def build_stage(rows, lyr, yt, sel, wiki):
     unlisted = Counter()
     for row in rows:
+        row["hint_film"] = film_hint(wiki.get(film_key(row)), row)
+        if row.get("hint_song") and leaks(row["hint_song"], row.get("title", "")):
+            print(f"  hint_song for {row.get('id')} contains a word of its title; not used")
+            row["hint_song"] = ""
         c = lyr.get(row.get("id"))
         if c:
             row.update(lrclib_id=c["id"], lrclib_track=c["track"], lrclib_artist=c["artist"],
@@ -469,7 +578,7 @@ def main(src, dst=None, review=False):
         rows = list(csv.DictReader(f))
     if not rows:
         sys.exit("Input CSV has no rows.")
-    lyr, yt, sel = load_json(LYRICS_CACHE), load_json(YT_CACHE), load_json(SELECTIONS)
+    lyr, yt, sel, wiki = load_json(LYRICS_CACHE), load_json(YT_CACHE), load_json(SELECTIONS), load_json(WIKI_CACHE)
     print("Lyrics:")
     lyrics_stage(rows, lyr)
     if review:
@@ -479,12 +588,15 @@ def main(src, dst=None, review=False):
         youtube_stage(rows, yt, key)
     else:
         print("\nYouTube: skipped (set YT_API_KEY to find official videos). Unverified songs get a YouTube search link.")
-    unlisted = build_stage(rows, lyr, yt, sel)
+    wiki_stage(rows, wiki)
+    unlisted = build_stage(rows, lyr, yt, sel, wiki)
     print(f"Reviewed sections used for {sum(1 for r in rows if r.get('id') in sel)} songs; the rest use auto picks.")
     cols = list(rows[0].keys()) + [c for c in OUT_COLS if c not in rows[0]]
     save_csv(dst, cols, rows)
     print("\nLyrics match:", dict(Counter(r.get("match_status", "") for r in rows)))
     print("Videos verified:", sum(r.get("yt_verified") == "y" for r in rows), "of", len(rows))
+    print("Hints: song-specific", sum(bool(r.get("hint_song")) for r in rows), "| film facts",
+          sum(bool(r.get("hint_film")) for r in rows), "| neither", sum(not (r.get("hint_song") or r.get("hint_film")) for r in rows))
     if unlisted:
         print("Channels seen but not on the allowlist (verify before adding to OFFICIAL_CHANNELS):")
         for ch, n in unlisted.most_common(12):

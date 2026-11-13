@@ -10,21 +10,35 @@ const CONFIG = {
     easy: { hint: true, more: true }, medium: { hint: true, more: false }, hard: { hint: false, more: false },
   },
   matchThreshold: 0.8,                           // pre-selects Correct on the reveal; the host decides
-  requireVerifiedVideo: false,                   // true = only songs with a verified official video are playable
   eras: { '90s': [1990, 1999], '00s': [2000, 2009], '10s': [2010, 2019], '20s': [2020, 2099] },
   singers: {                                     // display name -> spellings found in the CSV
     'Arijit Singh': ['arijit singh'], 'Shreya Ghoshal': ['shreya ghoshal'],
     'Sunidhi Chauhan': ['sunidhi chauhan'], 'KK': ['kk', 'krishnakumar kunnath'],
     'Shaan': ['shaan'], 'Sonu Nigam': ['sonu nigam'], 'Udit Narayan': ['udit narayan'],
+    'Alka Yagnik': ['alka yagnik'], 'Kumar Sanu': ['kumar sanu'],
   },
   storageKey: 'gaana-guess-v1',
 };
 const LEVELS = ['easy', 'medium', 'hard'];
+
+/* Demo round: 13 extra songs of its own (demo.csv), never drawn from the main game's songs.csv.
+   One slot per category of each track, difficulty rotating; no randomness anywhere, so it plays the
+   same on every device and every visit. Each slot lists a main song and sometimes a backup in
+   demo.csv (demo_rank 1, 2): the first one with lyrics is used. */
+const DEMO_SLOTS = [
+  { track: 'era', choice: '90s', level: 'easy' }, { track: 'era', choice: '00s', level: 'medium' },
+  { track: 'era', choice: '10s', level: 'hard' }, { track: 'era', choice: '20s', level: 'easy' },
+  { track: 'singer', choice: 'Arijit Singh', level: 'medium' }, { track: 'singer', choice: 'Shreya Ghoshal', level: 'hard' },
+  { track: 'singer', choice: 'Sunidhi Chauhan', level: 'easy' }, { track: 'singer', choice: 'KK', level: 'medium' },
+  { track: 'singer', choice: 'Shaan', level: 'hard' }, { track: 'singer', choice: 'Sonu Nigam', level: 'easy' },
+  { track: 'singer', choice: 'Udit Narayan', level: 'medium' }, { track: 'singer', choice: 'Alka Yagnik', level: 'hard' },
+  { track: 'singer', choice: 'Kumar Sanu', level: 'easy' },
+];
 const AVATARS = ['🎤', '🎧', '🎸', '🥁', '🎹', '🎷', '🎺', '🪕', '🦚', '🐯', '🐘', '🦜', '🌶️', '☕', '🪔', '🌙'];
 const COLORS = ['#C2185B', '#0B6E6E', '#C77700', '#5B3FA8', '#2E7D32', '#B23A1E', '#1565C0', '#8E2470', '#00838F', '#6D4C41'];
 const MAX_PLAYERS = COLORS.length;
 
-let SONGS = [], BY_ID = {}, S = null, draft = null, tick = null;
+let SONGS = [], DEMO_SONGS = [], BY_ID = {}, S = null, draft = null, tick = null;
 const $app = document.getElementById('app');
 const $bar = document.getElementById('bar');
 
@@ -79,7 +93,6 @@ function prepSong(r) {
     snippets: Object.fromEntries([...LEVELS, 'easy_extra'].map(l => [l, (r['snippet_' + l] || '').split('||').map(s => s.trim()).filter(Boolean)
       .map(x => { const m = x.match(/^(\d+(?:\.\d+)?)\|([\s\S]*)$/); return m ? { t: +m[1], text: m[2].trim() } : { t: null, text: x }; })])),
     verified: !!r.youtube_id && r.yt_verified === 'y',
-    playable: r.match_status === 'demo' || !CONFIG.requireVerifiedVideo || (!!r.youtube_id && r.yt_verified === 'y'),
   };
 }
 
@@ -124,7 +137,10 @@ const choicesFor = track => Object.keys(track === 'era' ? CONFIG.eras : CONFIG.s
 const scoreOf = (pi, round) => S.history.filter(h => h.pi === pi && (round == null || h.round === round))
   .reduce((a, h) => a + h.points, 0);
 
+/* Best hint first: hand-written song fact, then the Wikipedia film fact, then a basic fallback. */
 function hintText(song, t) {
+  if (song.hint_song) return song.hint_song;
+  if (song.hint_film) return song.hint_film;
   if (S.track === 'singer') return t.lead ? `The film stars ${t.lead}` : `Released in ${song.year}`;
   return { male: 'Sung by a male lead', female: 'Sung by a female lead', duet: 'A male and female duet' }[song.lead_gender]
     || `Sung by ${song.singers.length} singer${song.singers.length > 1 ? 's' : ''}`;
@@ -183,6 +199,39 @@ function beginRound() {
   go('pick');
 }
 
+/* Slot n (1-based) uses its demo songs in demo_rank order: the first with lyrics at the slot's level. */
+function demoTurns() {
+  return DEMO_SLOTS.map((d, i) => {
+    const song = DEMO_SONGS.filter(x => +x.demo_slot === i + 1 && x.snippets[d.level].length)
+      .sort((a, b) => +a.demo_rank - +b.demo_rank)[0];
+    return song ? { ...d, songId: song.id } : null;
+  }).filter(Boolean);
+}
+
+function startDemo() {
+  readDraft();
+  const turns = demoTurns();
+  if (!turns.length) return;
+  const players = draft.players.map((p, i) => ({ name: p.name.trim() || `Player ${i + 1}`, avatar: p.avatar, color: COLORS[i] }));
+  S = {
+    players, rounds: 1, timer: draft.timer, round: 1, track: turns[0].track, demo: turns,
+    order: turns.map((_, i) => i % players.length), oi: 0, turn: null, used: [], history: [], phase: 'play',
+  };
+  demoTurn(0);
+}
+
+function demoTurn(i) {
+  const d = S.demo[i], song = BY_ID[d.songId];
+  S.oi = i; S.track = d.track;
+  S.turn = {
+    pi: S.order[i], choice: d.choice, level: d.level, songId: song.id,
+    snippet: song.snippets[d.level][0], lead: song.leads[0] || null,               // always the first: fixed
+    extra: d.level === 'easy' ? song.snippets.easy_extra[0] || null : null,
+    hint: false, more: false, answer: '', ok: false, deadline: S.timer ? Date.now() + S.timer * 1000 : 0,
+  };
+  go('play');
+}
+
 function startTurn() {
   const t = S.turn, list = pool(S.track, t.choice, t.level);
   if (!list.length) return;
@@ -222,7 +271,7 @@ function verdictText(t) {
   return t.reason === 'time' ? 'Time’s up. Not this one' : 'Not this one';
 }
 
-/* Judging updates the page in place: a full re-render would restart the video. */
+/* Judging updates the page in place rather than re-rendering the whole reveal. */
 function judge(b) {
   S.turn.ok = b.dataset.v === '1';
   score(); store.save();
@@ -236,6 +285,7 @@ function judge(b) {
 }
 
 function nextTurn() {
+  if (S.demo) return S.oi + 1 < S.demo.length ? demoTurn(S.oi + 1) : go('gameEnd');
   S.oi++;
   if (S.oi >= S.order.length) return go(S.round >= S.rounds ? 'gameEnd' : 'roundEnd');
   S.turn = { pi: S.order[S.oi], choice: null, level: null };
@@ -250,6 +300,8 @@ function startTimer() {
     const left = Math.ceil((S.turn.deadline - Date.now()) / 1000);
     const el = document.getElementById('timer-left');
     if (el) { el.textContent = fmt(left); el.classList.toggle('low', left <= 10); }
+    const bar = document.getElementById('timebar-fill');
+    if (bar) { bar.style.width = `${Math.max(0, Math.min(100, (S.turn.deadline - Date.now()) / (S.timer * 10)))}%`; bar.classList.toggle('low', left <= 10); }
     if (left <= 0) reveal('time');
   };
   step();
@@ -259,54 +311,61 @@ function stopTimer() { clearInterval(tick); tick = null; }
 
 /* ------------------------------------------------------------------ views */
 const avatar = (p, cls = '') => `<span class="avatar ${cls}" style="--c:${p.color}" aria-hidden="true">${p.avatar}</span>`;
+const TRACKS = {
+  era: { icon: '🎞️', title: 'By era', sub: '90s, 00s, 10s or 20s' },
+  singer: { icon: '🎙️', title: 'By singer', sub: 'Arijit, Shreya, Sunidhi, KK, Shaan, Sonu, Udit, Alka, Kumar Sanu' },
+};
+const LEVEL_SECTION = { easy: 'A well-known part of a big hit', medium: 'A verse from the middle', hard: 'Deep in the song' };
 
 function viewSetup() {
   const saved = store.load();
   const canResume = saved && saved.phase && saved.phase !== 'setup';
   return `
   <section class="panel setup">
-    <h1 class="brand">Gaana Guess</h1>
-    <p class="lede">Read two lines. Name the song.</p>
+    <div class="hero">
+      <h1 class="brand">Gaana Guess</h1>
+      <p class="lede">Read the lines. Name the song. Bollywood, 1990 to now.</p>
+    </div>
     ${canResume ? `<div class="resume"><span>A saved game is waiting.</span><button class="btn" data-act="resume">Resume game</button></div>` : ''}
-    <div class="field"><span id="np-label">Players</span>
-      <div class="stepper" role="group" aria-labelledby="np-label">
-        <button class="btn" data-act="pdec" aria-label="Remove a player" ${draft.players.length <= 1 ? 'disabled' : ''}>−</button>
-        <output aria-live="polite">${draft.players.length}</output>
-        <button class="btn" data-act="pinc" aria-label="Add a player" ${draft.players.length >= MAX_PLAYERS ? 'disabled' : ''}>+</button>
-      </div></div>
-    <ul class="players">${draft.players.map((p, i) => `
-      <li>
-        <button class="avatar big" data-act="avatar" data-i="${i}" style="--c:${COLORS[i]}" aria-label="Change avatar for player ${i + 1}">${p.avatar}</button>
-        <input class="pname" data-i="${i}" maxlength="20" placeholder="Player ${i + 1}" value="${esc(p.name)}" aria-label="Name for player ${i + 1}">
-      </li>`).join('')}
-    </ul>
-    <div class="row">
+    <div class="setup-grid">
+      <div class="field"><span id="np-label">Players</span>
+        <div class="stepper" role="group" aria-labelledby="np-label">
+          <button class="btn" data-act="pdec" aria-label="Remove a player" ${draft.players.length <= 1 ? 'disabled' : ''}>−</button>
+          <output aria-live="polite">${draft.players.length}</output>
+          <button class="btn" data-act="pinc" aria-label="Add a player" ${draft.players.length >= MAX_PLAYERS ? 'disabled' : ''}>+</button>
+        </div></div>
       <label class="field"><span>Rounds</span>
         <input type="number" id="rounds" min="1" max="50" value="${draft.rounds}"></label>
       <label class="field"><span>Seconds per turn</span>
         <input type="number" id="timer" min="0" max="600" step="5" value="${draft.timer}">
-        <small>Set 0 to play without a timer</small></label>
+        <small>0 plays without a timer</small></label>
     </div>
+    <ul class="players">${draft.players.map((p, i) => `
+      <li class="player-card" style="--c:${COLORS[i]}">
+        <button class="avatar big" data-act="avatar" data-i="${i}" style="--c:${COLORS[i]}" aria-label="Change avatar for player ${i + 1}">${p.avatar}</button>
+        <input class="pname" data-i="${i}" maxlength="20" placeholder="Player ${i + 1}" value="${esc(p.name)}" aria-label="Name for player ${i + 1}">
+      </li>`).join('')}
+    </ul>
     <button class="btn primary big" data-act="start" ${SONGS.length ? '' : 'disabled'}>Start game</button>
+    ${DEMO_SONGS.length ? `<button class="btn demo-btn" data-act="demo">Try the demo round <small>${demoTurns().length} extra songs, one per era and singer, the same every time</small></button>` : ''}
     <p class="meta">${SONGS.length} songs loaded</p>
   </section>`;
 }
 
 function viewRound() {
-  const track = (v, title, sub) => `
+  const track = v => `
     <button class="track ${S.track === v ? 'on' : ''}" data-act="track" data-v="${v}" aria-pressed="${S.track === v}">
-      <strong>${title}</strong><span>${sub}</span></button>`;
+      <span class="track-icon" aria-hidden="true">${TRACKS[v].icon}</span>
+      <strong>${TRACKS[v].title}</strong><span>${TRACKS[v].sub}</span></button>`;
   return `
   <section class="panel">
-    <h2>Round ${S.round} of ${S.rounds}</h2>
-    <p>Pick the track for this round. Everyone plays it once, in a random order.</p>
-    <div class="tracks">
-      ${track('era', 'By era', '90s, 00s, 10s or 20s')}
-      ${track('singer', 'By singer', 'Arijit, Shreya, Sunidhi, KK, Shaan, Sonu, Udit')}
-    </div>
+    <p class="step">Round ${S.round} of ${S.rounds}</p>
+    <h2>Pick this round’s track</h2>
+    <p class="muted">Everyone plays it once, in a random order.</p>
+    <div class="tracks">${track('era')}${track('singer')}</div>
     <label class="field narrow"><span>Seconds per turn</span>
       <input type="number" id="timer" min="0" max="600" step="5" value="${S.timer}">
-      <small>Set 0 to play without a timer</small></label>
+      <small>0 plays without a timer</small></label>
     <button class="btn primary big" data-act="beginRound">Start round ${S.round}</button>
   </section>`;
 }
@@ -318,20 +377,25 @@ function helpLabel(l) {
 
 function viewPick() {
   const t = S.turn, p = S.players[t.pi];
-  const chip = (act, v, label, n, on) =>
-    `<button class="chip ${on ? 'on' : ''}" data-act="${act}" data-v="${esc(v)}" aria-pressed="${on}" ${n === 0 ? 'disabled' : ''}>
-      ${label}${n != null ? `<small>${n} left</small>` : ''}</button>`;
   const ready = t.choice && t.level && pool(S.track, t.choice, t.level).length;
+  const left = (c, l) => (c && l ? pool(S.track, c, l).length : null);
   return `
   <section class="panel">
-    <p class="turnof">${avatar(p)} <span>${esc(p.name)}, you’re up</span></p>
-    <h2>${S.track === 'era' ? 'Choose an era' : 'Choose a singer'}</h2>
-    <div class="chips">${choicesFor(S.track).map(c =>
-      chip('choice', c, esc(c), t.level ? pool(S.track, c, t.level).length : null, t.choice === c)).join('')}</div>
-    <h2>Choose difficulty</h2>
-    <div class="chips">${LEVELS.map(l =>
-      chip('level', l, `${cap(l)} <em>${CONFIG.base[l]} points</em><span class="allows">${helpLabel(l)}</span>`,
-        t.choice ? pool(S.track, t.choice, l).length : null, t.level === l)).join('')}</div>
+    <div class="turn-banner" style="--c:${p.color}">
+      ${avatar(p, 'xl')}
+      <div><p class="step">Turn ${S.oi + 1} of ${S.order.length}, round ${S.round}</p>
+        <h2>${esc(p.name)}, you’re up</h2></div>
+    </div>
+    <h3 class="pick-h">${S.track === 'era' ? 'Choose an era' : 'Choose a singer'}</h3>
+    <div class="chips">${choicesFor(S.track).map(c => { const n = left(c, t.level); return `
+      <button class="chip ${t.choice === c ? 'on' : ''}" data-act="choice" data-v="${esc(c)}" aria-pressed="${t.choice === c}" ${n === 0 ? 'disabled' : ''}>
+        ${esc(c)}${n != null ? `<small>${n} left</small>` : ''}</button>`; }).join('')}</div>
+    <h3 class="pick-h">Choose difficulty</h3>
+    <div class="levels">${LEVELS.map(l => { const n = left(t.choice, l); return `
+      <button class="level-card lv-${l} ${t.level === l ? 'on' : ''}" data-act="level" data-v="${l}" aria-pressed="${t.level === l}" ${n === 0 ? 'disabled' : ''}>
+        <span class="lv-name">${cap(l)}</span><span class="lv-pts">${CONFIG.base[l]}<em>pts</em></span>
+        <span class="lv-what">${LEVEL_SECTION[l]}</span>
+        <span class="allows">${helpLabel(l)}</span>${n != null ? `<small>${n} left</small>` : ''}</button>`; }).join('')}</div>
     <button class="btn primary big" data-act="play" ${ready ? '' : 'disabled'}>Show my lines</button>
   </section>`;
 }
@@ -342,12 +406,14 @@ function viewPlay() {
   return `
   <section class="panel play">
     <div class="playhead">
-      <p class="turnof">${avatar(p)} <span>${esc(p.name)}</span><span class="tag">${esc(t.choice)}</span><span class="tag">${cap(t.level)}</span></p>
+      <p class="turnof">${avatar(p)} <span>${esc(p.name)}</span><span class="tag">${esc(t.choice)}</span><span class="tag lv-${t.level}">${cap(t.level)}</span></p>
       ${S.timer ? `<span id="timer-left" class="timer" role="timer">${fmt(S.timer)}</span>` : ''}
     </div>
+    ${S.timer ? `<div class="timebar" aria-hidden="true"><span id="timebar-fill"></span></div>` : ''}
+    ${S.demo ? `<p class="step">Demo song ${S.oi + 1} of ${S.demo.length}, ${S.track === 'era' ? 'by era' : 'by singer'}</p>` : ''}
     <blockquote class="lyric">${lines(t.snippet)}</blockquote>
     ${t.more ? `<blockquote class="lyric extra" aria-label="Extra lines">${lines(t.extra)}</blockquote>` : ''}
-    ${t.hint ? `<p class="hint">${esc(hintText(song, t))}</p>` : ''}
+    ${t.hint ? `<p class="hint"><span aria-hidden="true">💡</span> ${esc(hintText(song, t))}</p>` : ''}
     <label class="answer-field"><span>Your answer</span>
       <input id="guess" autocomplete="off" spellcheck="false" enterkeyhint="done" placeholder="Type the song name"></label>
     <p class="tries">A correct answer now scores ${points(t.level, t.hint, t.more)}.</p>
@@ -365,9 +431,10 @@ function viewReveal() {
   const start = videoStart(song, t.snippet);
   return `
   <section class="panel reveal">
-    <h2 class="title">${esc(song.title)}</h2>
-    <p class="sub">${esc(song.album)}${song.year ? `, ${song.year}` : ''}</p>
-
+    <div class="answer-head">
+      <h2 class="title">${esc(song.title)}</h2>
+      <p class="sub">${esc(song.album)}${song.year ? `, ${song.year}` : ''}</p>
+    </div>
     ${t.answer ? `<div class="judge">
       <h3>${esc(p.name)} answered</h3>
       <div class="judgerow"><span class="said">“${esc(t.answer)}”</span>
@@ -376,17 +443,12 @@ function viewReveal() {
           <button data-act="judge" data-v="0" aria-pressed="${!t.ok}">Wrong</button>
         </span></div>
     </div>` : ''}
-    <p id="verdict" class="verdict ${t.points ? 'good' : 'miss'}">${verdictText(t)}</p>
-    <p id="pts" class="pts">+${t.points}</p>
-
-    ${song.verified ? `
-    <div class="video"><iframe src="https://www.youtube-nocookie.com/embed/${encodeURIComponent(song.youtube_id)}?start=${start}&autoplay=1&rel=0"
-      title="${esc(song.title)}, official video" allow="autoplay; encrypted-media; picture-in-picture" allowfullscreen></iframe></div>
-    <p class="credit">Official upload${song.yt_channel ? ` by ${esc(song.yt_channel)}` : ''}, played via YouTube.
-      <a href="${ytUrl(song, start)}" target="_blank" rel="noopener">Open on YouTube</a></p>`
-    : song.match_status === 'demo' ? '<p class="credit">Demo song: no video.</p>'
-    : `<p class="credit"><a class="btn yt" href="${ytUrl(song)}" target="_blank" rel="noopener">Find it on YouTube</a></p>`}
-
+    <div class="scoreline">
+      <p id="verdict" class="verdict ${t.points ? 'good' : 'miss'}">${verdictText(t)}</p>
+      <p id="pts" class="pts">+${t.points}</p>
+    </div>
+    ${song.match_status === 'demo' ? '<p class="credit">Demo song: no video.</p>'
+    : `<p class="credit"><a class="btn yt" href="${ytUrl(song, start)}" target="_blank" rel="noopener">▶ ${song.verified ? 'Watch the official video' : 'Find it on YouTube'}</a></p>`}
     <dl>
       <dt>Singers</dt><dd>${esc(song.singers.join(', '))}</dd>
       <dt>Music</dt><dd>${esc(song.composer || 'Not listed')}</dd>
@@ -399,15 +461,17 @@ function viewReveal() {
 function board(showRound) {
   const rows = S.players.map((p, i) => ({ ...p, total: scoreOf(i), now: scoreOf(i, S.round) }))
     .sort((a, b) => b.total - a.total);
+  const top = Math.max(1, rows[0].total);
   return `
   <table class="board">
     <thead><tr><th scope="col">Rank</th><th scope="col">Player</th>${showRound ? '<th scope="col" class="num">This round</th>' : ''}<th scope="col" class="num">Total</th></tr></thead>
     <tbody>${rows.map(r => `
       <tr class="${r.total > 0 && r.total === rows[0].total ? 'lead' : ''}">
-        <td>${1 + rows.filter(x => x.total > r.total).length}</td>
-        <td>${avatar(r, 'sm')} ${esc(r.name)}</td>
+        <td class="rank">${1 + rows.filter(x => x.total > r.total).length}</td>
+        <td class="who"><span class="who-row">${avatar(r, 'sm')} ${esc(r.name)}</span>
+          <span class="bar" style="--w:${Math.round(100 * r.total / top)}%;--c:${r.color}" aria-hidden="true"></span></td>
         ${showRound ? `<td class="num">+${r.now}</td>` : ''}
-        <td class="num">${r.total}</td></tr>`).join('')}
+        <td class="num total">${r.total}</td></tr>`).join('')}
     </tbody>
   </table>`;
 }
@@ -415,7 +479,8 @@ function board(showRound) {
 function viewRoundEnd() {
   return `
   <section class="panel">
-    <h2>Scores after round ${S.round} of ${S.rounds}</h2>
+    <p class="step">Round ${S.round} of ${S.rounds} done</p>
+    <h2>Scoreboard</h2>
     ${board(true)}
     <button class="btn primary big" data-act="nextRound">Set up round ${S.round + 1}</button>
   </section>`;
@@ -425,22 +490,27 @@ function viewGameEnd() {
   const top = Math.max(...S.players.map((_, i) => scoreOf(i)));
   const winners = S.players.filter((_, i) => scoreOf(i) === top);
   return `
-  <section class="panel">
+  <section class="panel finale">
+    ${top > 0 ? `<div class="winners">${winners.map(w => avatar(w, 'xl')).join('')}</div>` : ''}
+    ${S.demo ? '<p class="step">Demo round complete</p>' : ''}
     <h1 class="brand">${top > 0 ? `${winners.map(w => esc(w.name)).join(' & ')} ${winners.length > 1 ? 'tie' : 'wins'}` : 'Game over'}</h1>
     ${board(true)}
-    <div class="actions">
+    <div class="actions">${S.demo ? `
+      <button class="btn primary" data-act="newGame">Start a real game</button>
+      <button class="btn ghost" data-act="replayDemo">Replay the demo</button>` : `
       <button class="btn primary" data-act="extraRound">Play one more round</button>
-      <button class="btn ghost" data-act="newGame">New game</button>
+      <button class="btn ghost" data-act="newGame">New game</button>`}
     </div>
   </section>`;
 }
 
 function renderBar(phase) {
   if (!S || phase === 'setup') { $bar.innerHTML = ''; return; }
+  const now = ['pick', 'play', 'reveal'].includes(phase) && S.turn ? S.turn.pi : -1;
   $bar.innerHTML = `
     <span class="barbrand">Gaana Guess</span>
-    <span class="barround">Round ${S.round}/${S.rounds}, ${S.track === 'era' ? 'by era' : 'by singer'}</span>
-    <ul class="mini">${S.players.map((p, i) => `<li title="${esc(p.name)}">${avatar(p, 'sm')}<b>${scoreOf(i)}</b></li>`).join('')}</ul>
+    <span class="barround">${S.demo ? `Demo round, ${S.oi + 1}/${S.demo.length}` : `Round ${S.round}/${S.rounds}`}, ${S.track === 'era' ? 'by era' : 'by singer'}</span>
+    <ul class="mini">${S.players.map((p, i) => `<li class="${i === now ? 'now' : ''}" title="${esc(p.name)}">${avatar(p, 'sm')}<b>${scoreOf(i)}</b></li>`).join('')}</ul>
     <button class="btn link quit" data-act="newGame">Quit</button>`;
 }
 
@@ -467,6 +537,9 @@ const actions = {
   pdec: () => resizePlayers(draft.players.length - 1),
   pinc: () => resizePlayers(draft.players.length + 1),
   start: startGame,
+  demo: startDemo,
+  replayDemo: () => { const keep = S.players; stopTimer(); store.clear(); S = null;
+    draft.players = keep.map(p => ({ name: p.name, avatar: p.avatar })); startDemo(); },
   track: b => { S.track = b.dataset.v; store.save(); render(); },
   beginRound,
   choice: b => { S.turn.choice = b.dataset.v; store.save(); render(); },
@@ -498,8 +571,12 @@ document.addEventListener('keydown', e => {
   try {
     const res = await fetch('songs.csv', { cache: 'no-cache' });
     if (!res.ok) throw new Error(res.status);
-    SONGS = parseCSV(await res.text()).map(prepSong).filter(s => s.id && s.title && s.playable);
-    BY_ID = Object.fromEntries(SONGS.map(s => [s.id, s]));
+    SONGS = parseCSV(await res.text()).map(prepSong).filter(s => s.id && s.title);
+    try {                                              // the demo's own songs; the game runs without them
+      const d = await fetch('demo.csv', { cache: 'no-cache' });
+      if (d.ok) DEMO_SONGS = parseCSV(await d.text()).map(prepSong).filter(s => s.id && s.title);
+    } catch { DEMO_SONGS = []; }
+    BY_ID = Object.fromEntries([...SONGS, ...DEMO_SONGS].map(s => [s.id, s]));
   } catch {
     $app.innerHTML = `
       <section class="panel">

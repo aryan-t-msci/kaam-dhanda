@@ -12,21 +12,33 @@ Open http://localhost:8000. (Opening `index.html` directly won't work: browsers 
 loading `songs.csv` from `file://`.)
 
 ## Put it on GitHub Pages (builds the real song list for you)
-1. Push this folder to a GitHub repo (files at the repo root, branch `main`).
-2. Repo **Settings → Pages → Build and deployment → Source: GitHub Actions**.
-   (If it was set to "Deploy from a branch", switch it. The workflow does the deploying.)
-3. Open the **Actions** tab. "Build songs and deploy" runs on every push: it fetches lyrics from
-   LRCLIB on GitHub's servers, builds `songs.csv`, and publishes the site. The first run takes
-   about 5–10 minutes; later runs reuse cached lyrics and take about a minute.
-4. The run's summary page shows the build report: lyric matches and songs per bucket.
-5. The game is live at `https://<username>.github.io/<repo>/`.
+This folder lives in `gg/` of the repo; the workflow lives at the repo root in
+`.github/workflows/deploy.yml` (GitHub only runs workflows from there).
 
-Full lyrics live only in the workflow cache, never in the repo or on the site; the site gets
-2–3 line snippets. The `songs.csv` in the repo is demo data for local play; the workflow replaces it.
+1. Upload this folder's files into `gg/`.
+2. **Settings → Pages → Source: GitHub Actions.**
+3. **Actions → Build songs and deploy** runs on every push to `gg/`, or on demand (Run workflow). It fetches lyrics (LRCLIB) and film facts (Wikipedia) on GitHub's servers,
+   builds `songs.csv`, and publishes only the four game files.
+4. The run summary shows the build report: lyric matches, hint coverage, songs per bucket.
 
-To add or fix songs, edit `songs_input.csv` and push. Re-run any time from Actions → Run workflow.
-Official video embeds are optional: add a repository secret named `YT_API_KEY`
-(Settings → Secrets and variables → Actions) and the next run finds them.
+## Demo round
+"Try the demo round" plays **13 extra songs that are not part of the main game**: one per era
+(90s, 00s, 10s, 20s) and one per Track 2 singer, difficulty rotating easy, medium, hard.
+Nothing is random (same songs, lines and turn order on every device and every visit).
+
+- Songs: `demo_input.csv` (built to `demo.csv`). The main game only ever reads `songs.csv`.
+- Each slot (`demo_slot` 1–13) has a main song (`demo_rank` 1) and, for most slots, a backup (rank 2),
+  used only if the main song's lyrics aren't found. A slot with no usable song is skipped.
+- Slot order and levels: `DEMO_SLOTS` at the top of `app.js`.
+
+## Hints
+- `hint_song` (in `songs_input.csv`): a hand-written fact about the song itself. Edit freely;
+  the build drops any hint that contains a word of the song's title.
+- `hint_film` (built): the most story-specific sentence of the film's Wikipedia intro (who it follows,
+  where it's set, what it's based on), with every name of the film removed, e.g. "Starring Shah Rukh
+  Khan and Kajol, the film follows Raj and Simran, two young non-resident Indians who fall in love
+  during a vacation through Europe with their friends." Box-office and award sentences are skipped.
+- The game shows the song hint if there is one, else the film hint, else a basic fallback.
 
 ## Build the song list locally (optional)
 The bundled `songs.csv` is demo data (invented titles and lines) so the game works out of the box.
@@ -41,15 +53,6 @@ The bundled `songs.csv` is demo data (invented titles and lines) so the game wor
 numbered, hooks marked `[H]`, and the automatic picks. Section choices go into `selections.json`
 as line ranges (2–3 lines each, never touching a hook); the next build uses them instead of the
 automatic picks. Invalid ranges are reported and fall back to the automatic pick.
-
-### Official videos (optional)
-Without a key, the reveal shows a "Find it on YouTube" link. To embed the official video instead:
-get a free YouTube Data API key (Google Cloud Console → enable **YouTube Data API v3** → Credentials),
-then build with `YT_API_KEY=your_key python build_lyrics.py songs_input.csv songs.csv`
-(PowerShell: `$env:YT_API_KEY="your_key"; python ...`). About 100 songs a day fit the free quota;
-progress is saved. Only allowlisted label channels count. To make verified video a hard requirement,
-set `requireVerifiedVideo: true` in `app.js` and `REQUIRE_VERIFIED_VIDEO = True` in the build script.
-If a video starts in the wrong place, set `yt_offset` (seconds, can be negative) and rebuild.
 
 If you edit a CSV in Excel, save as **CSV UTF-8 (Comma delimited)**.
 
@@ -66,6 +69,6 @@ the right answer and the host taps Correct or Wrong.
 All numbers are in the `CONFIG` block at the top of `app.js`.
 
 ## Credits
-Lyric excerpts: LRCLIB, a community-contributed lyrics database. Songs and videos belong to their
-labels and are played from official YouTube channels through YouTube's embedded player.
+Lyric excerpts: LRCLIB, a community-contributed lyrics database. Film facts: adapted from Wikipedia (CC BY-SA). Songs and videos belong to their
+labels; the reveal links to them on YouTube.
 Personal, non-commercial use.
